@@ -1,6 +1,6 @@
 # real-time statistical waveset processing
 
-#### (very much a work-in-progress, at this point)
+### ⚠️ (very much a work-in-progress, at this point) ⚠️
 
 inspired deeply by [nathan ho's brilliant post on statistical waveset processing](https://nathan.ho.name/posts/wavesets-clustering/), this project aims to implement a real-time version of the procedure in an audio plugin. i deeply suggest you read his original blog post for more information about the exact approach here.
 
