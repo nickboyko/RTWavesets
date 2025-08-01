@@ -46,10 +46,10 @@ private:
     double rmsM2           { 0.0 };
     
     // RTEFC parameters
-    float radius           { 1.5f };
-    float alpha            { 0.98f };
-    float weight           { 5.0f };
-    float maxClusters      { 10.0f };
+    std::atomic<float> radius           { 1.5f };
+    std::atomic<float> alpha            { 0.98f };
+    std::atomic<float> weight           { 5.0f };
+    std::atomic<float> maxClusters      { 128.f };
     
     // helper methods
     // calculates waveset length & rms features for a single waveset

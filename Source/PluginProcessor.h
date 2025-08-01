@@ -14,7 +14,8 @@
 //==============================================================================
 /**
 */
-class RTWavesetsAudioProcessor  : public juce::AudioProcessor
+class RTWavesetsAudioProcessor  : public juce::AudioProcessor,
+                                  public juce::AudioProcessorValueTreeState::Listener
 {
 public:
     //==============================================================================
@@ -54,23 +55,26 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
     
-    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    void parameterChanged (const juce::String &parameterID, float newValue) override;
     
+    juce::AudioProcessorValueTreeState apvts {*this, nullptr, "Parameters", createParameterLayout()};
     
 private:
     //==============================================================================
-    
-    juce::AudioProcessorValueTreeState aptvs {*this, nullptr, "Parameters", createParameterLayout()};
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     
     RTEFC_Engine rtefcEngine;
     
     juce::AudioBuffer<float> inputAssemblyBuffer;
+    int inputAssemblyBufferWritePosition = 0;
     
     juce::AudioBuffer<float> currentOutputWaveset;
     int outputReadPosition = 0;
     
     // for detecting waveset boundary (at zero-crossing)
     int lastSign = 0;
+    
+    bool isFirstWavesetProcessed = false;
     
     //==============================================================================
     

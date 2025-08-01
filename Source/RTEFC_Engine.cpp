@@ -38,10 +38,10 @@ void RTEFC_Engine::reset()
 
 void RTEFC_Engine::setParameters(float newRadius, float newAlpha, float newWeight, float newMaxClusters)
 {
-    radius = newRadius;
-    alpha = newAlpha;
-    weight = newWeight;
-    maxClusters = newMaxClusters;
+    radius.store(newRadius);
+    alpha.store(newAlpha);
+    weight.store(newWeight);
+    maxClusters.store(newMaxClusters);
 }
 
 const juce::AudioBuffer<float>& RTEFC_Engine::processWaveset(const juce::AudioBuffer<float> &newWaveset)
@@ -67,7 +67,7 @@ const juce::AudioBuffer<float>& RTEFC_Engine::processWaveset(const juce::AudioBu
     int closest_idx = findClosestCentroid(normalizedFeatures, d_close);
     
     // if new case is novel, and we have room to look for more clusters...
-    if (d_close > radius && centroids.size() < maxClusters)
+    if (d_close > radius.load() && centroids.size() < static_cast<size_t>(maxClusters.load()))
     {
         // add s_new as new centroid
         centroids.push_back(normalizedFeatures);
@@ -80,9 +80,11 @@ const juce::AudioBuffer<float>& RTEFC_Engine::processWaveset(const juce::AudioBu
     {
         // otherwise, we just update the closest existing centroid with exponential filtering
         auto& s_close = centroids[closest_idx];
+        DBG("now playing: " << centroids[closest_idx][0]);
+        float currentAlpha = alpha.load();
         for (size_t i = 0; i < s_close.size(); ++i)
         {
-            s_close[i] = alpha * s_close[i] + (1.0f - alpha) * normalizedFeatures[i];
+            s_close[i] = currentAlpha * s_close[i] + (1.0f - currentAlpha) * normalizedFeatures[i];
         }
         
         // use representative waveset of closest cluster
@@ -129,7 +131,7 @@ std::vector<float> RTEFC_Engine::getNormalizedFeatures(const std::vector<float> 
     if (wavesetCount < 2)
     {
         // not enough data to normalize, so return un-normalized but weighted features
-        return { rawFeatures[0] * weight, rawFeatures[1] };
+        return { rawFeatures[0] * weight.load(), rawFeatures[1] };
     }
     
     double lengthVar = lengthM2 / wavesetCount;
@@ -138,10 +140,11 @@ std::vector<float> RTEFC_Engine::getNormalizedFeatures(const std::vector<float> 
     double lengthStdDev = std::sqrt(lengthVar) + 1e-8;
     double rmsStdDev = std::sqrt(rmsVar) + 1e-8;
     
-    float scaledLength = (rawFeatures[0] - lengthMean) / lengthStdDev;
-    float scaledRms = (rawFeatures[1] - rmsMean) / rmsStdDev;
-    
-    return { scaledLength * weight, scaledRms };
+    float scaledLength = (static_cast<float>(rawFeatures[0] - lengthMean)) / static_cast<float>(lengthStdDev);
+    float scaledRms = (static_cast<float>(rawFeatures[1] - rmsMean)) / static_cast<float>(rmsStdDev);
+
+    // MODIFIED: Use .load() for thread-safe reading
+    return { scaledLength * weight.load(), scaledRms };
 }
 
 int RTEFC_Engine::findClosestCentroid(const std::vector<float> &features, float &distanceFound)

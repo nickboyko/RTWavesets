@@ -22,10 +22,18 @@ RTWavesetsAudioProcessor::RTWavesetsAudioProcessor()
                        )
 #endif
 {
+    apvts.addParameterListener("radius", this);
+    apvts.addParameterListener("alpha", this);
+    apvts.addParameterListener("weight", this);
+    apvts.addParameterListener("clusters per second", this);
 }
 
 RTWavesetsAudioProcessor::~RTWavesetsAudioProcessor()
 {
+    apvts.removeParameterListener("radius", this);
+    apvts.removeParameterListener("alpha", this);
+    apvts.removeParameterListener("weight", this);
+    apvts.removeParameterListener("clusters per second", this);
 }
 
 //==============================================================================
@@ -93,14 +101,29 @@ void RTWavesetsAudioProcessor::changeProgramName (int index, const juce::String&
 //==============================================================================
 void RTWavesetsAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
+    rtefcEngine.prepare(sampleRate);
+    
+    const int numChannels = 2;
+    const int bufferSize = static_cast<int>(sampleRate * 2.0);
+    
+    inputAssemblyBuffer.setSize(numChannels, bufferSize);
+    inputAssemblyBuffer.clear();
+    inputAssemblyBufferWritePosition = 0;
+    
+    currentOutputWaveset.setSize(numChannels, bufferSize);
+    currentOutputWaveset.clear();
+    outputReadPosition = 0;
+    
+    lastSign = 0;
+    isFirstWavesetProcessed = false;
+    
+    parameterChanged("radius", apvts.getRawParameterValue("radius")->load());
 }
 
 void RTWavesetsAudioProcessor::releaseResources()
 {
-    // When playback stops, you can use this as an opportunity to free up any
-    // spare memory, etc.
+    inputAssemblyBuffer.setSize(0, 0);
+    currentOutputWaveset.setSize(0, 0);
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -135,27 +158,73 @@ void RTWavesetsAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     auto totalNumInputChannels  = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    auto* leftChannelData = buffer.getWritePointer(0);
+    const auto* rightChannelReader = totalNumInputChannels > 1 ? buffer.getReadPointer(1) : buffer.getReadPointer(0);
+    
+    for (int i = 0; i < buffer.getNumSamples(); ++i)
     {
-        auto* channelData = buffer.getWritePointer (channel);
-
-        // ..do something to the data...
+        const float leftSample = leftChannelData[i];
+        const float rightSample = rightChannelReader[i];
+        
+        // start assembling waveset buffer
+        if (inputAssemblyBufferWritePosition < inputAssemblyBuffer.getNumSamples())
+        {
+            inputAssemblyBuffer.setSample(0, inputAssemblyBufferWritePosition, leftSample);
+            inputAssemblyBuffer.setSample(1, inputAssemblyBufferWritePosition, rightSample);
+            inputAssemblyBufferWritePosition++;
+        }
+        
+        // detect zero-crossings using only left channel
+        int currentSign = (leftSample > 0.0f) - (leftSample < 0.0f);
+        if (currentSign > 0 && lastSign <= 0)
+        {
+            if (inputAssemblyBufferWritePosition > 1)
+            {
+                juce::AudioBuffer<float> completedWaveset(2, inputAssemblyBufferWritePosition);
+                completedWaveset.copyFrom(0, 0, inputAssemblyBuffer, 0, 0, inputAssemblyBufferWritePosition);
+                completedWaveset.copyFrom(1, 0, inputAssemblyBuffer, 1, 0, inputAssemblyBufferWritePosition);
+                
+                const auto& representative = rtefcEngine.processWaveset(completedWaveset);
+                
+                currentOutputWaveset.makeCopyOf(representative);
+                outputReadPosition = 0;
+                isFirstWavesetProcessed = true;
+            }
+            
+            inputAssemblyBuffer.clear();
+            inputAssemblyBufferWritePosition = 0;
+        }
+        lastSign = currentSign;
+        
+        // write to output buffer
+        if (isFirstWavesetProcessed && outputReadPosition < currentOutputWaveset.getNumSamples())
+        {
+            leftChannelData[i] = currentOutputWaveset.getSample(0, outputReadPosition);
+            if (totalNumOutputChannels > 1)
+            {
+                buffer.getWritePointer(1)[i] = currentOutputWaveset.getSample(1, outputReadPosition);
+            }
+            outputReadPosition++;
+        }
+        else
+        {
+            leftChannelData[i] = leftSample;
+            if (totalNumOutputChannels > 1)
+            {
+                buffer.getWritePointer(1)[i] = rightSample;
+            }
+        }
     }
+    
+//    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+//    {
+//        auto* channelData = buffer.getWritePointer (channel);
+//
+//        // ..do something to the data...
+//    }
 }
 
 //==============================================================================
@@ -176,35 +245,45 @@ void RTWavesetsAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     // You should use this method to store your parameters in the memory block.
     // You could do that either as raw data, or use the XML or ValueTree classes
     // as intermediaries to make it easy to save and load complex data.
+    auto state = apvts.copyState();
+    std::unique_ptr<juce::XmlElement> xml (state.createXml());
+    copyXmlToBinary(*xml, destData);
 }
 
 void RTWavesetsAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     // You should use this method to restore your parameters from this memory block,
     // whose contents will have been created by the getStateInformation() call.
+    
+    std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary(data, sizeInBytes));
+    if (xmlState.get() != nullptr)
+        if (xmlState->hasTagName(apvts.state.getType()))
+            apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
+}
+
+void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID, float newValue)
+{
+    DBG("Parameter changed: " << parameterID << " to " << newValue);
+    auto radius = apvts.getRawParameterValue("radius")->load();
+    auto alpha = apvts.getRawParameterValue("alpha")->load();
+    auto weight = apvts.getRawParameterValue("weight")->load();
+    auto clustersPerSecond = apvts.getRawParameterValue("clusters per second")->load();
+        
+    auto maxClusters = static_cast<int>(clustersPerSecond * 10.0f);
+    
+    rtefcEngine.setParameters(radius, alpha, weight, maxClusters);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout RTWavesetsAudioProcessor::createParameterLayout()
 {
-    juce::AudioProcessorValueTreeState::ParameterLayout layout;
+    std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
+        
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("radius", "radius", 0.1f, 10.f, 1.5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("alpha", "alpha", 0.8f, 0.999f, 0.98f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("weight", "weight", 0.1f, 20.f, 5.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("clusters per second", "clusters", 1.0f, 50.f, 12.8f));
     
-    layout.add(std::make_unique<juce::AudioParameterFloat>("clusters per second",
-                                                           "clusters per second",
-                                                           juce::NormalisableRange<float>(0.1f, 20.f, 0.1f, 1.0f), 4.f));
-    
-    layout.add(std::make_unique<juce::AudioParameterFloat>("weight",
-                                                           "weight",
-                                                           juce::NormalisableRange<float>(1.f, 10.f, 0.5f, 1.0f), 5.f));
-    
-    layout.add(std::make_unique<juce::AudioParameterFloat>("alpha",
-                                                           "alpha",
-                                                           juce::NormalisableRange<float>(0.8f, 0.999f, 0.001f, 1.0f), 0.9f));
-    
-    layout.add(std::make_unique<juce::AudioParameterFloat>("radius",
-                                                           "radius",
-                                                           juce::NormalisableRange<float>(0.1f, 10.f, 0.1f, 1.0f), 5.f));
-    
-    return layout;
+    return { params.begin(), params.end() };
 }
 
 //==============================================================================
