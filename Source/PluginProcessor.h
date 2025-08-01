@@ -71,7 +71,6 @@ private:
     juce::AudioBuffer<float> currentOutputWaveset;
     int outputReadPosition = 0;
     
-    // for detecting waveset boundary (at zero-crossing)
     int lastSign = 0;
     
     bool isFirstWavesetProcessed = false;

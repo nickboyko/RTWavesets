@@ -26,6 +26,7 @@ RTWavesetsAudioProcessor::RTWavesetsAudioProcessor()
     apvts.addParameterListener("alpha", this);
     apvts.addParameterListener("weight", this);
     apvts.addParameterListener("clusters per second", this);
+    apvts.addParameterListener("reset", this);
 }
 
 RTWavesetsAudioProcessor::~RTWavesetsAudioProcessor()
@@ -34,6 +35,7 @@ RTWavesetsAudioProcessor::~RTWavesetsAudioProcessor()
     apvts.removeParameterListener("alpha", this);
     apvts.removeParameterListener("weight", this);
     apvts.removeParameterListener("clusters per second", this);
+    apvts.removeParameterListener("reset", this);
 }
 
 //==============================================================================
@@ -263,6 +265,21 @@ void RTWavesetsAudioProcessor::setStateInformation (const void* data, int sizeIn
 
 void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID, float newValue)
 {
+    if (parameterID == "reset")
+    {
+        if (newValue > 0.5f)
+        {
+            DBG("reset triggered");
+            rtefcEngine.reset();
+            isFirstWavesetProcessed = false;
+            
+            juce::MessageManager::callAsync([this]() {
+                apvts.getParameter("reset")->setValueNotifyingHost(0.0f);
+            });
+        }
+        return;
+    }
+    
     DBG("Parameter changed: " << parameterID << " to " << newValue);
     auto radius = apvts.getRawParameterValue("radius")->load();
     auto alpha = apvts.getRawParameterValue("alpha")->load();
@@ -277,11 +294,12 @@ void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID,
 juce::AudioProcessorValueTreeState::ParameterLayout RTWavesetsAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("radius", "radius", 0.1f, 10.f, 1.5f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("alpha", "alpha", 0.8f, 0.999f, 0.98f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("weight", "weight", 0.1f, 20.f, 5.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("clusters per second", "clusters", 1.0f, 50.f, 12.8f));
+            
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"radius", 1}, "Radius", 0.1f, 10.f, 1.5f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"alpha", 1}, "Alpha", 0.8f, 0.999f, 0.98f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"weight", 1}, "Weight", 0.1f, 20.f, 5.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"clusters per second", 1}, "Cluster Density", 1.0f, 50.f, 12.8f));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"reset", 1}, "Reset", false));
     
     return { params.begin(), params.end() };
 }

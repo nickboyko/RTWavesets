@@ -46,7 +46,7 @@ private:
     double rmsM2           { 0.0 };
     
     // RTEFC parameters
-    std::atomic<float> radius           { 1.5f };
+    std::atomic<float> radius           { 0.5f };
     std::atomic<float> alpha            { 0.98f };
     std::atomic<float> weight           { 5.0f };
     std::atomic<float> maxClusters      { 128.f };
