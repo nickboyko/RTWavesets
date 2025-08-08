@@ -59,21 +59,24 @@ public:
     
     juce::AudioProcessorValueTreeState apvts {*this, nullptr, "Parameters", createParameterLayout()};
     
+    RTEFC_Engine rtefcEngine;
+    
 private:
     //==============================================================================
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-    
-    RTEFC_Engine rtefcEngine;
     
     juce::AudioBuffer<float> inputAssemblyBuffer;
     int inputAssemblyBufferWritePosition = 0;
     
     juce::AudioBuffer<float> currentOutputWaveset;
     int outputReadPosition = 0;
-    
     int lastSign = 0;
-    
     bool isFirstWavesetProcessed = false;
+    
+    juce::AudioBuffer<float> scratchWaveset;
+    
+    float prevRadius = 1.5f;
+    float prevLengthWeight = 5.0f;
     
     //==============================================================================
     

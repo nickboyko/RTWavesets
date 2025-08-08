@@ -13,82 +13,154 @@
 // ===========================================================
 RTEFC_Engine::RTEFC_Engine()
 {
-    reset();
+    resetAll();
 }
 
 void RTEFC_Engine::prepare(double sampleRate)
 {
-    reset();
+    resetAll();
 }
 
-void RTEFC_Engine::reset()
+void RTEFC_Engine::resetAll()
+{
+    // reset online normalizer state
+    wavesetCount = 0;
+    lengthMean = rmsMean = 0.0;
+    lengthVarEma = rmsVarEma = 1.0;
+    distanceEma = 0.0f;
+    resetClustersOnly();
+}
+
+void RTEFC_Engine::resetClustersOnly()
 {
     // clear matrices and waveset buffer
     centroids.clear();
-    representativeWavesets.clear();
+    representatives.clear();
     lastChosenWaveset.setSize(0, 0);
-    
-    // reset online normalizer state
-    wavesetCount = 0;
-    lengthMean = 0.0;
-    lengthM2 = 0.0;
-    rmsMean = 0.0;
-    rmsM2 = 0.0;
+    reserveForMaxClusters();
 }
 
-void RTEFC_Engine::setParameters(float newRadius, float newAlpha, float newWeight, float newMaxClusters)
+void RTEFC_Engine::reserveForMaxClusters()
+{
+    const int cap = (int) std::max(8.0f, maxClusters.load());
+    centroids.reserve((size_t) cap);
+    representatives.reserve((size_t) cap);
+}
+
+void RTEFC_Engine::setParameters(float newRadius, float newAlpha, float newLenWeight, float newMaxClusters, float newNormHalfLifeWavesets, bool newAutoRadius)
 {
     radius.store(newRadius);
     alpha.store(newAlpha);
-    weight.store(newWeight);
+    weight.store(newLenWeight);
     maxClusters.store(newMaxClusters);
+    autoRadius.store(newAutoRadius);
+    
+    if (newNormHalfLifeWavesets > 1.f && newNormHalfLifeWavesets != normHalfLifeWavesets) {
+        normHalfLifeWavesets = newNormHalfLifeWavesets;
+        beta = kLn2 / normHalfLifeWavesets;
+        beta = juce::jlimit(0.001f, 0.5f, beta);
+    }
+    
+    reserveForMaxClusters();
 }
 
 const juce::AudioBuffer<float>& RTEFC_Engine::processWaveset(const juce::AudioBuffer<float> &newWaveset)
 {
-    // waveset length & rms feature extraction
-    auto rawFeatures = extractFeatures(newWaveset);
+    if (newWaveset.getNumSamples() <= 0 || newWaveset.getNumChannels() <= 0)
+        return lastChosenWaveset;
     
-    updateNormalizers(rawFeatures);
-    auto normalizedFeatures = getNormalizedFeatures(rawFeatures);
+    // waveset length & rms feature extraction
+    auto raw = extractFeatures(newWaveset);
+    
+    wavesetCount++;
+    emaUpdate(raw[0], beta, lengthMean, lengthVarEma);
+    emaUpdate(raw[1], beta, rmsMean,    rmsVarEma);
+    
+    auto features = getNormalizedFeatures(raw);
     
     // RTEFC algorithm
     if (centroids.empty())
     {
         // first waveset, becomes first centroid
-        centroids.push_back(normalizedFeatures);
-        representativeWavesets.push_back(newWaveset);
-        lastChosenWaveset = newWaveset;
+        centroids.push_back(features);
+        representatives.emplace_back();
+        representatives.back().makeCopyOf(newWaveset);
+        lastChosenWaveset = representatives.back();
         return lastChosenWaveset;
+    }
+    
+    if (centroids.size() != representatives.size())
+    {
+        const size_t n = std::min(centroids.size(), representatives.size());
+        centroids.resize(n);
+        representatives.resize(n);
+        if (n == 0)
+        {
+            centroids.push_back(features);
+            representatives.emplace_back();
+            representatives.back().makeCopyOf(newWaveset);
+            lastChosenWaveset = representatives.back();
+            return lastChosenWaveset;
+        }
     }
     
     // find closest existing centroid
     float d_close = 0.0f;
-    int closest_idx = findClosestCentroid(normalizedFeatures, d_close);
+    const int closest_idx = findClosestCentroid(features, d_close);
+    if (closest_idx < 0 || closest_idx >= (int)centroids.size())
+   {
+       centroids.push_back(features);
+       representatives.emplace_back();
+       representatives.back().makeCopyOf(newWaveset);
+       lastChosenWaveset = representatives.back();
+       return lastChosenWaveset;
+   }
+    
+    distanceEma = (1.0f - distanceEmaBeta) * distanceEma + distanceEmaBeta * d_close;
+    
+    float radiusEff = radius.load();
+    if (autoRadius.load() && distanceEma > 0.0f)
+        radiusEff = std::max(radiusEff, 1.25f * distanceEma);
+    
+    const bool haveRoom = (int)centroids.size() < (int)maxClusters.load();
     
     // if new case is novel, and we have room to look for more clusters...
-    if (d_close > radius.load() && centroids.size() < static_cast<size_t>(maxClusters.load()))
+    if (d_close > radiusEff && haveRoom)
     {
         // add s_new as new centroid
-        centroids.push_back(normalizedFeatures);
+        centroids.push_back(features);
         
         // new waveset becomes representative for this cluster
-        representativeWavesets.push_back(newWaveset);
-        lastChosenWaveset = newWaveset;
+        representatives.emplace_back();
+        representatives.back().makeCopyOf(newWaveset);
+        lastChosenWaveset = representatives.back();
     }
     else
     {
         // otherwise, we just update the closest existing centroid with exponential filtering
-        auto& s_close = centroids[closest_idx];
+        auto& s_close = centroids[(size_t) closest_idx];
         DBG("now playing: " << centroids[closest_idx][0]);
-        float currentAlpha = alpha.load();
+        const float a = alpha.load();
         for (size_t i = 0; i < s_close.size(); ++i)
-        {
-            s_close[i] = currentAlpha * s_close[i] + (1.0f - currentAlpha) * normalizedFeatures[i];
-        }
+            s_close[i] = a * s_close[i] + (1.0f - a) * features[i];
         
         // use representative waveset of closest cluster
-        lastChosenWaveset = representativeWavesets[closest_idx];
+        if ((size_t)closest_idx < representatives.size())
+            lastChosenWaveset = representatives[(size_t) closest_idx];
+        else
+        {
+            const size_t n = std::min(centroids.size(), representatives.size());
+            centroids.resize(n);
+            representatives.resize(n);
+            if (n == 0)
+            {
+                centroids.push_back(features);
+                representatives.emplace_back();
+            }
+            representatives.back().makeCopyOf(newWaveset);
+            lastChosenWaveset = representatives.back();
+        }
+        
     }
     
     return lastChosenWaveset;
@@ -98,77 +170,49 @@ const juce::AudioBuffer<float>& RTEFC_Engine::processWaveset(const juce::AudioBu
 // private helper methods
 // =============================================
 
-std::vector<float> RTEFC_Engine::extractFeatures(const juce::AudioBuffer<float> &waveset)
+std::array<float,2> RTEFC_Engine::extractFeatures(const juce::AudioBuffer<float> &waveset) const
 {
     float length = static_cast<float>(waveset.getNumSamples());
-    
+    // feature extraction is only left channel for now
     float rms = waveset.getRMSLevel(0, 0, waveset.getNumSamples());
-    
     return { length, rms };
 }
 
-void RTEFC_Engine::updateNormalizers(const std::vector<float> &rawFeatures)
+std::array<float,2> RTEFC_Engine::getNormalizedFeatures(const std::array<float,2> &raw) const
 {
-    wavesetCount++;
-    float length = rawFeatures[0];
-    float rms = rawFeatures[1];
-    
-    // welford's algorithm:
-    // https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
-    double delta_len = length - lengthMean;
-    lengthMean += delta_len / wavesetCount;
-    double delta2_len = length - lengthMean;
-    lengthM2 += delta_len * delta2_len;
-    
-    double delta_rms = rms - rmsMean;
-    rmsMean += delta_rms / wavesetCount;
-    double delta2_rms = rms - rmsMean;
-    rmsM2 += delta_rms * delta2_rms;
+    // compute std from EMA variances with caution to avoid divide-by-0
+    const double lenStd = std::sqrt(std::max(1e-10, lengthVarEma));
+    const double rmsStd = std::sqrt(std::max(1e-10, rmsVarEma));
+
+    float f0 = (float)((raw[0] - lengthMean) / lenStd);
+    const double logR = std::log(std::max(1e-6f, raw[1]));
+    const double logRmean = std::log(std::max(1e-6, rmsMean));
+    float f1 = (float)((logR - logRmean) / std::max(1e-6, rmsStd));
+
+    f0 *= weight.load();
+
+    return { f0, f1 };
 }
 
-std::vector<float> RTEFC_Engine::getNormalizedFeatures(const std::vector<float> &rawFeatures)
-{
-    if (wavesetCount < 2)
-    {
-        // not enough data to normalize, so return un-normalized but weighted features
-        return { rawFeatures[0] * weight.load(), rawFeatures[1] };
-    }
-    
-    double lengthVar = lengthM2 / wavesetCount;
-    double rmsVar = rmsM2 / wavesetCount;
-    
-    double lengthStdDev = std::sqrt(lengthVar) + 1e-8;
-    double rmsStdDev = std::sqrt(rmsVar) + 1e-8;
-    
-    float scaledLength = (static_cast<float>(rawFeatures[0] - lengthMean)) / static_cast<float>(lengthStdDev);
-    float scaledRms = (static_cast<float>(rawFeatures[1] - rmsMean)) / static_cast<float>(rmsStdDev);
-
-    // MODIFIED: Use .load() for thread-safe reading
-    return { scaledLength * weight.load(), scaledRms };
-}
-
-int RTEFC_Engine::findClosestCentroid(const std::vector<float> &features, float &distanceFound)
+int RTEFC_Engine::findClosestCentroid(const std::array<float,2> &features, float &distanceFound) const
 {
     int closestIndex = -1;
     float minDistanceSq = std::numeric_limits<float>::max();
     
     for (size_t i = 0; i < centroids.size(); ++i)
     {
-        // squared Euclidean distance
-        float distSq = 0.0f;
-        const auto& centroid = centroids[i];
-        
-        float diff0 = features[0] - centroid[0];
-        float diff1 = features[1] - centroid[1];
-        distSq = (diff0 * diff0) + (diff1 * diff1);
-        
-        if (distSq < minDistanceSq)
+        const auto& c = centroids[i];
+        const float dx = features[0] - c[0];
+        const float dy = features[1] - c[1];
+        const float d2 = dx*dx + dy*dy;
+
+        if (d2 < minDistanceSq)
         {
-            minDistanceSq = distSq;
-            closestIndex = static_cast<int>(i);
+            minDistanceSq = d2;
+            closestIndex = (int) i;
         }
     }
     
-    distanceFound = std::sqrt(minDistanceSq);
+    distanceFound = std::sqrt(std::max(0.0f, minDistanceSq));
     return closestIndex;
 }

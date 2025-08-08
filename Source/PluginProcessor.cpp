@@ -24,18 +24,24 @@ RTWavesetsAudioProcessor::RTWavesetsAudioProcessor()
 {
     apvts.addParameterListener("radius", this);
     apvts.addParameterListener("alpha", this);
-    apvts.addParameterListener("weight", this);
-    apvts.addParameterListener("clusters per second", this);
-    apvts.addParameterListener("reset", this);
+    apvts.addParameterListener("length_weight", this);
+    apvts.addParameterListener("clusters_per_second", this);
+    apvts.addParameterListener("norm_half_life", this);
+    apvts.addParameterListener("auto_radius", this);
+    apvts.addParameterListener("reset_clusters", this);
+    apvts.addParameterListener("reset_all", this);
 }
 
 RTWavesetsAudioProcessor::~RTWavesetsAudioProcessor()
 {
     apvts.removeParameterListener("radius", this);
     apvts.removeParameterListener("alpha", this);
-    apvts.removeParameterListener("weight", this);
-    apvts.removeParameterListener("clusters per second", this);
-    apvts.removeParameterListener("reset", this);
+    apvts.removeParameterListener("length_weight", this);
+    apvts.removeParameterListener("clusters_per_second", this);
+    apvts.removeParameterListener("norm_half_life", this);
+    apvts.removeParameterListener("auto_radius", this);
+    apvts.removeParameterListener("reset_clusters", this);
+    apvts.removeParameterListener("reset_all", this);
 }
 
 //==============================================================================
@@ -116,6 +122,9 @@ void RTWavesetsAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     currentOutputWaveset.clear();
     outputReadPosition = 0;
     
+    scratchWaveset.setSize(numChannels, bufferSize);
+    scratchWaveset.clear();
+    
     lastSign = 0;
     isFirstWavesetProcessed = false;
     
@@ -126,6 +135,7 @@ void RTWavesetsAudioProcessor::releaseResources()
 {
     inputAssemblyBuffer.setSize(0, 0);
     currentOutputWaveset.setSize(0, 0);
+    scratchWaveset.setSize(0, 0);
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -163,13 +173,14 @@ void RTWavesetsAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
-    auto* leftChannelData = buffer.getWritePointer(0);
-    const auto* rightChannelReader = totalNumInputChannels > 1 ? buffer.getReadPointer(1) : buffer.getReadPointer(0);
+    auto* leftOut = buffer.getWritePointer(0);
+    const auto* leftIn = buffer.getReadPointer(0);
+    const auto* rightIn = totalNumInputChannels > 1 ? buffer.getReadPointer(1) : buffer.getReadPointer(0);
     
     for (int i = 0; i < buffer.getNumSamples(); ++i)
     {
-        const float leftSample = leftChannelData[i];
-        const float rightSample = rightChannelReader[i];
+        const float leftSample = leftIn[i];
+        const float rightSample = rightIn[i];
         
         // start assembling waveset buffer
         if (inputAssemblyBufferWritePosition < inputAssemblyBuffer.getNumSamples())
@@ -179,21 +190,34 @@ void RTWavesetsAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
             inputAssemblyBufferWritePosition++;
         }
         
-        // detect zero-crossings using only left channel
+        // detect zero-crossings on left channel
         int currentSign = (leftSample > 0.0f) - (leftSample < 0.0f);
         if (currentSign > 0 && lastSign <= 0)
         {
-            if (inputAssemblyBufferWritePosition > 1)
+            const int wsLen = inputAssemblyBufferWritePosition;
+            if (wsLen > 1 && wsLen <= scratchWaveset.getNumSamples())
             {
-                juce::AudioBuffer<float> completedWaveset(2, inputAssemblyBufferWritePosition);
-                completedWaveset.copyFrom(0, 0, inputAssemblyBuffer, 0, 0, inputAssemblyBufferWritePosition);
-                completedWaveset.copyFrom(1, 0, inputAssemblyBuffer, 1, 0, inputAssemblyBufferWritePosition);
-                
-                const auto& representative = rtefcEngine.processWaveset(completedWaveset);
-                
-                currentOutputWaveset.makeCopyOf(representative);
-                outputReadPosition = 0;
-                isFirstWavesetProcessed = true;
+                // copy into scratch
+                scratchWaveset.clear();
+                scratchWaveset.copyFrom(0, 0, inputAssemblyBuffer, 0, 0, wsLen);
+                scratchWaveset.copyFrom(1, 0, inputAssemblyBuffer, 1, 0, wsLen);
+
+                // create a view buffer of exact length without realloc
+                juce::AudioBuffer<float> wsView (scratchWaveset.getArrayOfWritePointers(), 2, wsLen);
+
+                const auto& representative = rtefcEngine.processWaveset(wsView);
+
+                const int copyLen = std::min(representative.getNumSamples(), currentOutputWaveset.getNumSamples());
+                if (copyLen > 0)
+                {
+                    currentOutputWaveset.clear();
+                    currentOutputWaveset.copyFrom(0, 0, representative, 0, 0, copyLen);
+                    if (currentOutputWaveset.getNumChannels() > 1 && representative.getNumChannels() > 1)
+                        currentOutputWaveset.copyFrom(1, 0, representative, 1, 0, copyLen);
+
+                    outputReadPosition = 0;
+                    isFirstWavesetProcessed = true;
+                }
             }
             
             inputAssemblyBuffer.clear();
@@ -204,7 +228,7 @@ void RTWavesetsAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         // write to output buffer
         if (isFirstWavesetProcessed && outputReadPosition < currentOutputWaveset.getNumSamples())
         {
-            leftChannelData[i] = currentOutputWaveset.getSample(0, outputReadPosition);
+            leftOut[i] = currentOutputWaveset.getSample(0, outputReadPosition);
             if (totalNumOutputChannels > 1)
             {
                 buffer.getWritePointer(1)[i] = currentOutputWaveset.getSample(1, outputReadPosition);
@@ -213,20 +237,14 @@ void RTWavesetsAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         }
         else
         {
-            leftChannelData[i] = leftSample;
+            // pass through until representative waveset is ready
+            leftOut[i] = leftSample;
             if (totalNumOutputChannels > 1)
             {
                 buffer.getWritePointer(1)[i] = rightSample;
             }
         }
     }
-    
-//    for (int channel = 0; channel < totalNumInputChannels; ++channel)
-//    {
-//        auto* channelData = buffer.getWritePointer (channel);
-//
-//        // ..do something to the data...
-//    }
 }
 
 //==============================================================================
@@ -237,8 +255,8 @@ bool RTWavesetsAudioProcessor::hasEditor() const
 
 juce::AudioProcessorEditor* RTWavesetsAudioProcessor::createEditor()
 {
-//    return new RTWavesetsAudioProcessorEditor (*this);
-    return new juce::GenericAudioProcessorEditor(*this);
+    return new RTWavesetsAudioProcessorEditor (*this);
+//    return new juce::GenericAudioProcessorEditor(*this);
 }
 
 //==============================================================================
@@ -265,30 +283,56 @@ void RTWavesetsAudioProcessor::setStateInformation (const void* data, int sizeIn
 
 void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID, float newValue)
 {
-    if (parameterID == "reset")
+    if (parameterID == "reset_all")
     {
         if (newValue > 0.5f)
         {
-            DBG("reset triggered");
-            rtefcEngine.reset();
+            DBG("reset all triggered");
+            rtefcEngine.resetAll();
             isFirstWavesetProcessed = false;
             
             juce::MessageManager::callAsync([this]() {
-                apvts.getParameter("reset")->setValueNotifyingHost(0.0f);
+                if (auto* p = apvts.getParameter("reset_all")) p->setValueNotifyingHost(0.0f);
+            });
+        }
+        return;
+    }
+    
+    if (parameterID == "reset_clusters")
+    {
+        if (newValue > 0.5f)
+        {
+            DBG("reset clusters triggered");
+            rtefcEngine.resetClustersOnly();
+            isFirstWavesetProcessed = false;
+            
+            juce::MessageManager::callAsync([this]() {
+                if (auto* p = apvts.getParameter("reset_clusters")) p->setValueNotifyingHost(0.0f);
             });
         }
         return;
     }
     
     DBG("Parameter changed: " << parameterID << " to " << newValue);
-    auto radius = apvts.getRawParameterValue("radius")->load();
-    auto alpha = apvts.getRawParameterValue("alpha")->load();
-    auto weight = apvts.getRawParameterValue("weight")->load();
-    auto clustersPerSecond = apvts.getRawParameterValue("clusters per second")->load();
-        
-    auto maxClusters = static_cast<int>(clustersPerSecond * 10.0f);
+    const float radius    = apvts.getRawParameterValue("radius")->load();
+    const float alpha     = apvts.getRawParameterValue("alpha")->load();
+    const float lenWeight = apvts.getRawParameterValue("length_weight")->load();
+    const float cps       = apvts.getRawParameterValue("clusters_per_second")->load();
+    const float halfLife  = apvts.getRawParameterValue("norm_half_life")->load();
+    const bool  autoRad   = apvts.getRawParameterValue("auto_radius")->load() > 0.5f;
+
+    const float maxClusters = cps;
     
-    rtefcEngine.setParameters(radius, alpha, weight, maxClusters);
+    // detect large parameter changes to trigger reset
+    const bool bigRadiusChange = std::abs(prevRadius - radius) / std::max(0.001f, prevRadius) > 0.25f;
+    const bool bigWeightChange = std::abs(prevLengthWeight - lenWeight) / std::max(0.001f, prevLengthWeight) > 0.25f;
+    if (bigRadiusChange || bigWeightChange)
+        rtefcEngine.resetClustersOnly();
+    
+    rtefcEngine.setParameters(radius, alpha, lenWeight, maxClusters, halfLife, autoRad);
+    
+    prevRadius = radius;
+    prevLengthWeight = lenWeight;
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout RTWavesetsAudioProcessor::createParameterLayout()
@@ -296,10 +340,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout RTWavesetsAudioProcessor::cr
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
             
     params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"radius", 1}, "Radius", 0.1f, 10.f, 1.5f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"alpha", 1}, "Alpha", 0.8f, 0.999f, 0.98f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"weight", 1}, "Weight", 0.1f, 20.f, 5.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"clusters per second", 1}, "Cluster Density", 1.0f, 50.f, 12.8f));
-    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"reset", 1}, "Reset", false));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"alpha", 1}, "Alpha", 0.80f, 0.999f, 0.98f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"length_weight", 1}, "Length Weight", 0.1f, 20.f, 5.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"clusters_per_second", 1}, "Cluster Density", 1.0f, 50.f, 12.8f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"norm_half_life", 1}, "Normalization Half-Life", 8.0f, 256.f, 64.f));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"auto_radius", 1}, "Auto Radius", false));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"reset_clusters", 1}, "Reset Clusters", false));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"reset_all", 1}, "Reset All", false));
     
     return { params.begin(), params.end() };
 }
