@@ -7,6 +7,10 @@
       <FILE id="PFXbuH" name="RTEFC_Engine.cpp" compile="1" resource="0"
             file="Source/RTEFC_Engine.cpp"/>
       <FILE id="qYNCYh" name="RTEFC_Engine.h" compile="0" resource="0" file="Source/RTEFC_Engine.h"/>
+      <FILE id="WWqNx2" name="KMeansWindowEngine.cpp" compile="1" resource="0"
+            file="Source/KMeansWindowEngine.cpp"/>
+      <FILE id="tOAw8T" name="KMeansWindowEngine.h" compile="0" resource="0"
+            file="Source/KMeansWindowEngine.h"/>
       <FILE id="AsZinX" name="PluginProcessor.cpp" compile="1" resource="0"
             file="Source/PluginProcessor.cpp"/>
       <FILE id="Kerr9T" name="PluginProcessor.h" compile="0" resource="0"

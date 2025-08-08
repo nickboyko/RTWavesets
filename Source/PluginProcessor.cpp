@@ -22,6 +22,9 @@ RTWavesetsAudioProcessor::RTWavesetsAudioProcessor()
                        )
 #endif
 {
+    apvts.addParameterListener("engine_mode", this);
+    
+    // rtefc params
     apvts.addParameterListener("radius", this);
     apvts.addParameterListener("alpha", this);
     apvts.addParameterListener("length_weight", this);
@@ -30,18 +33,20 @@ RTWavesetsAudioProcessor::RTWavesetsAudioProcessor()
     apvts.addParameterListener("auto_radius", this);
     apvts.addParameterListener("reset_clusters", this);
     apvts.addParameterListener("reset_all", this);
+    
+    // kmeans params
+    apvts.addParameterListener("km_k", this);
+    apvts.addParameterListener("km_window", this);
+    apvts.addParameterListener("km_refresh", this);
+    apvts.addParameterListener("km_iters", this);
+    apvts.addParameterListener("km_length_weight", this);
 }
 
 RTWavesetsAudioProcessor::~RTWavesetsAudioProcessor()
 {
-    apvts.removeParameterListener("radius", this);
-    apvts.removeParameterListener("alpha", this);
-    apvts.removeParameterListener("length_weight", this);
-    apvts.removeParameterListener("clusters_per_second", this);
-    apvts.removeParameterListener("norm_half_life", this);
-    apvts.removeParameterListener("auto_radius", this);
-    apvts.removeParameterListener("reset_clusters", this);
-    apvts.removeParameterListener("reset_all", this);
+    for (auto id : { "radius","alpha","length_weight","clusters_per_second","norm_half_life","auto_radius","reset_clusters","reset_all",
+                         "engine_mode","km_k","km_window","km_refresh","km_iters","km_length_weight" })
+            apvts.removeParameterListener(id, this);
 }
 
 //==============================================================================
@@ -110,6 +115,7 @@ void RTWavesetsAudioProcessor::changeProgramName (int index, const juce::String&
 void RTWavesetsAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     rtefcEngine.prepare(sampleRate);
+    kmeansEngine.prepare(sampleRate);
     
     const int numChannels = 2;
     const int bufferSize = static_cast<int>(sampleRate * 2.0);
@@ -129,6 +135,7 @@ void RTWavesetsAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     isFirstWavesetProcessed = false;
     
     parameterChanged("radius", apvts.getRawParameterValue("radius")->load());
+    parameterChanged("engine_mode", apvts.getRawParameterValue("engine_mode")->load());
 }
 
 void RTWavesetsAudioProcessor::releaseResources()
@@ -204,19 +211,32 @@ void RTWavesetsAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
                 // create a view buffer of exact length without realloc
                 juce::AudioBuffer<float> wsView (scratchWaveset.getArrayOfWritePointers(), 2, wsLen);
-
-                const auto& representative = rtefcEngine.processWaveset(wsView);
-
-                const int copyLen = std::min(representative.getNumSamples(), currentOutputWaveset.getNumSamples());
-                if (copyLen > 0)
+                
+                const EngineMode m = mode.load();
+                const juce::AudioBuffer<float>* rep = nullptr;
+                
+                if (m == EngineMode::RTEFC)
                 {
-                    currentOutputWaveset.clear();
-                    currentOutputWaveset.copyFrom(0, 0, representative, 0, 0, copyLen);
-                    if (currentOutputWaveset.getNumChannels() > 1 && representative.getNumChannels() > 1)
-                        currentOutputWaveset.copyFrom(1, 0, representative, 1, 0, copyLen);
+                    rep = &rtefcEngine.processWaveset(wsView);
+                }
+                else
+                {
+                    rep = &kmeansEngine.processWaveset(wsView);
+                }
+                
+                if (rep != nullptr)
+                {
+                    const int copyLen = std::min(rep->getNumSamples(), currentOutputWaveset.getNumSamples());
+                    if (copyLen > 0)
+                    {
+                        currentOutputWaveset.clear();
+                        currentOutputWaveset.copyFrom(0, 0, *rep, 0, 0, copyLen);
+                        if (currentOutputWaveset.getNumChannels() > 1 && rep->getNumChannels() > 1)
+                            currentOutputWaveset.copyFrom(1, 0, *rep, 1, 0, copyLen);
 
-                    outputReadPosition = 0;
-                    isFirstWavesetProcessed = true;
+                        outputReadPosition = 0;
+                        isFirstWavesetProcessed = true;
+                    }
                 }
             }
             
@@ -289,6 +309,7 @@ void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID,
         {
             DBG("reset all triggered");
             rtefcEngine.resetAll();
+            kmeansEngine.resetAll();
             isFirstWavesetProcessed = false;
             
             juce::MessageManager::callAsync([this]() {
@@ -304,12 +325,20 @@ void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID,
         {
             DBG("reset clusters triggered");
             rtefcEngine.resetClustersOnly();
+            kmeansEngine.resetAll();
             isFirstWavesetProcessed = false;
             
             juce::MessageManager::callAsync([this]() {
                 if (auto* p = apvts.getParameter("reset_clusters")) p->setValueNotifyingHost(0.0f);
             });
         }
+        return;
+    }
+    
+    if (parameterID == "engine_mode")
+    {
+        const int m = (int)newValue;
+        mode.store(m == 0 ? EngineMode::RTEFC : EngineMode::WindowedKMeans);
         return;
     }
     
@@ -333,19 +362,65 @@ void RTWavesetsAudioProcessor::parameterChanged(const juce::String &parameterID,
     
     prevRadius = radius;
     prevLengthWeight = lenWeight;
+    
+    const int kmK        = (int) apvts.getRawParameterValue("km_k")->load();
+    const int kmWin      = (int) apvts.getRawParameterValue("km_window")->load();
+    const int kmRefresh  = (int) apvts.getRawParameterValue("km_refresh")->load();
+    const int kmIters    = (int) apvts.getRawParameterValue("km_iters")->load();
+    const float kmLW     = apvts.getRawParameterValue("km_length_weight")->load();
+
+    kmeansEngine.setParameters(kmK, kmWin, kmRefresh, kmIters, kmLW);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout RTWavesetsAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
+    
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{"engine_mode", 1},
+            "Engine Mode", juce::StringArray{ "RTEFC", "Windowed K-Means" }, 0));
             
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"radius", 1}, "Radius", 0.1f, 10.f, 1.5f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"alpha", 1}, "Alpha", 0.80f, 0.999f, 0.98f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"length_weight", 1}, "Length Weight", 0.1f, 20.f, 5.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"clusters_per_second", 1}, "Cluster Density", 1.0f, 50.f, 12.8f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"norm_half_life", 1}, "Normalization Half-Life", 8.0f, 256.f, 64.f));
-    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"auto_radius", 1}, "Auto Radius", false));
+    //rtefc
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"radius", 1}, "Radius", juce::NormalisableRange<float>(0.1f, 10.f, 0.0f, 0.4f), 1.5f));
+    
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"alpha", 1}, "Alpha", juce::NormalisableRange<float>(0.85f, 0.995f, 0.0f, 0.6f), 0.98f));
+    
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"length_weight", 1}, "Length Weight",
+        juce::NormalisableRange<float>(0.5f, 12.f, 0.0f, 0.5f), 5.0f));
+    
+    
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"clusters_per_second", 1}, "Cluster Density",
+        juce::NormalisableRange<float>(1.0f, 50.f, 0.0f, 0.45f), 12.0f));
+    
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"norm_half_life", 1}, "Normalization Half-Life",
+        juce::NormalisableRange<float>(16.f, 256.f, 0.0f, 0.6f), 64.f));
+    
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID{"auto_radius", 1}, "Auto Radius", false));
+    
+    
+    //k-means
+    params.push_back(std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID{"km_k", 1}, "K (clusters)", 2, 32, 8)); // avoid degenerate k=1[1]
 
+    params.push_back(std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID{"km_window", 1}, "Window (wavesets)", 64, 1024, 256)); // per-window stats[1]
+
+    params.push_back(std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID{"km_refresh", 1}, "Refresh Interval (wavesets)", 8, 128, 32));
+
+    params.push_back(std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID{"km_iters", 1}, "Iterations/Refresh", 1, 8, 3));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{"km_length_weight", 1}, "KMeans Length Weight",
+        juce::NormalisableRange<float>(0.5f, 12.f, 0.0f, 0.5f), 5.0f));
+
+    //general
     params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"reset_clusters", 1}, "Reset Clusters", false));
     params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"reset_all", 1}, "Reset All", false));
     

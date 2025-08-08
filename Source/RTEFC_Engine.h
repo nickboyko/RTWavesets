@@ -23,7 +23,6 @@ public:
     
     void prepare(double sampleRate);
     
-    
     void resetAll();          // hard reset: stats + clusters
     void resetClustersOnly(); // soft reset, no stats
 

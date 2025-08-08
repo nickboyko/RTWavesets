@@ -10,6 +10,13 @@
 
 #include <JuceHeader.h>
 #include "RTEFC_Engine.h"
+#include "KMeansWindowEngine.h"
+
+enum class EngineMode
+{
+    RTEFC = 0,
+    WindowedKMeans = 1
+};
 
 //==============================================================================
 /**
@@ -60,10 +67,13 @@ public:
     juce::AudioProcessorValueTreeState apvts {*this, nullptr, "Parameters", createParameterLayout()};
     
     RTEFC_Engine rtefcEngine;
+    KMeansWindowEngine kmeansEngine;
     
 private:
     //==============================================================================
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    
+    std::atomic<EngineMode> mode { EngineMode::RTEFC };
     
     juce::AudioBuffer<float> inputAssemblyBuffer;
     int inputAssemblyBufferWritePosition = 0;
