@@ -78,6 +78,11 @@ const juce::AudioBuffer<float>& RTEFC_Engine::processWaveset(const juce::AudioBu
     
     auto features = getNormalizedFeatures(raw);
     
+    lastProcessedFeatures = features;
+    recentPoints.push_back(features);
+    if (recentPoints.size() > maxRecentPoints)
+        recentPoints.erase(recentPoints.begin());
+    
     // RTEFC algorithm
     if (centroids.empty())
     {
@@ -215,4 +220,19 @@ int RTEFC_Engine::findClosestCentroid(const std::array<float,2> &features, float
     
     distanceFound = std::sqrt(std::max(0.0f, minDistanceSq));
     return closestIndex;
+}
+
+std::vector<std::array<float,2>> RTEFC_Engine::getVisualizationCentroids() const
+{
+    return centroids;
+}
+
+std::vector<std::array<float,2>> RTEFC_Engine::getRecentPoints() const
+{
+    return recentPoints;
+}
+
+std::optional<std::array<float,2>> RTEFC_Engine::getCurrentPoint() const
+{
+    return lastProcessedFeatures;
 }

@@ -118,6 +118,7 @@ const juce::AudioBuffer<float>& KMeansWindowEngine::processWaveset(const juce::A
         return lastChosen;
 
     auto raw = extractFeatures(newWaveset);
+    lastProcessedFeatures = normalizeFeature(raw);
     writeEntry(newWaveset, raw);
 
     wavesetsSinceRefresh++;
@@ -378,3 +379,34 @@ void KMeansWindowEngine::refreshModel()
         representatives[(size_t) ci] = (bestIdx >= 0 && bestIdx < n) ? bestIdx : -1;
     }
 }
+
+std::vector<std::array<float,2>> KMeansWindowEngine::getVisualizationCentroids() const
+{
+    return centroids;
+}
+
+std::vector<std::array<float,2>> KMeansWindowEngine::getWindowPoints() const
+{
+    std::vector<std::array<float,2>> points;
+    const int n = std::min(countInWindow, (int)featuresNorm.size());
+    points.reserve((size_t)n);
+    for (int i = 0; i < n; ++i)
+        points.push_back(featuresNorm[(size_t)i]);
+    return points;
+}
+
+std::vector<int> KMeansWindowEngine::getWindowAssignments() const
+{
+    std::vector<int> assigns;
+    const int n = std::min(countInWindow, (int)assignments.size());
+    assigns.reserve((size_t)n);
+    for (int i = 0; i < n; ++i)
+        assigns.push_back(assignments[(size_t)i]);
+    return assigns;
+}
+
+std::optional<std::array<float,2>> KMeansWindowEngine::getCurrentPoint() const
+{
+    return lastProcessedFeatures;
+}
+

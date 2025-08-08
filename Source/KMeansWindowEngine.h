@@ -38,6 +38,11 @@ public:
     int getNumClusters() const noexcept { return (int) centroids.size(); }
     int getWindowCount() const noexcept { return countInWindow; }
     
+    std::vector<std::array<float,2>> getVisualizationCentroids() const;
+    std::vector<std::array<float,2>> getWindowPoints() const;
+    std::vector<int> getWindowAssignments() const;
+    std::optional<std::array<float,2>> getCurrentPoint() const;
+    
 private:
     struct Entry
     {
@@ -98,9 +103,9 @@ private:
     int nearestCentroid(const std::array<float,2>& x) const;
     float distance2(const std::array<float,2>& a, const std::array<float,2>& b) const;
 
-    // Quantization: returns representative index or -1
     int quantizeIndexFor(const std::array<float,2>& raw) const;
 
-    // Safety
     static inline float safeStd(float s) { return s < 1e-6f ? 1.0f : s; }
+    
+    std::optional<std::array<float,2>> lastProcessedFeatures;
 };

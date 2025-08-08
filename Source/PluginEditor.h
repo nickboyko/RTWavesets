@@ -14,6 +14,8 @@
 //==============================================================================
 /**
 */
+class ClusterVisualizationComponent;
+
 class RTWavesetsAudioProcessorEditor  : public juce::AudioProcessorEditor,
                                         private juce::Timer
 {
@@ -55,6 +57,7 @@ private:
 
     //attachments
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt;
+    std::unique_ptr<ClusterVisualizationComponent> visualizationComponent;
     juce::AudioProcessorValueTreeState::SliderAttachment radiusAtt { audioProcessor.apvts, "radius", radiusSlider };
     juce::AudioProcessorValueTreeState::SliderAttachment alphaAtt { audioProcessor.apvts, "alpha", alphaSlider };
     juce::AudioProcessorValueTreeState::SliderAttachment weightAtt { audioProcessor.apvts, "length_weight", lengthWeightSlider };

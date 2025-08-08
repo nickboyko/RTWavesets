@@ -4,6 +4,10 @@
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
   <MAINGROUP id="SMCm9J" name="RTWavesets">
     <GROUP id="{7BD882B9-1560-221E-2341-F3FC3E42F988}" name="Source">
+      <FILE id="Q1L9gd" name="ClusterVisualizationComponent.cpp" compile="1"
+            resource="0" file="Source/ClusterVisualizationComponent.cpp"/>
+      <FILE id="zC8kc7" name="ClusterVisualizationComponent.h" compile="0"
+            resource="0" file="Source/ClusterVisualizationComponent.h"/>
       <FILE id="PFXbuH" name="RTEFC_Engine.cpp" compile="1" resource="0"
             file="Source/RTEFC_Engine.cpp"/>
       <FILE id="qYNCYh" name="RTEFC_Engine.h" compile="0" resource="0" file="Source/RTEFC_Engine.h"/>

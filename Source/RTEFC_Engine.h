@@ -35,6 +35,10 @@ public:
     int getNumClusters() const noexcept { return (int) centroids.size(); }
     float getDistanceEMA() const noexcept { return distanceEma; }
     
+    std::vector<std::array<float,2>> getVisualizationCentroids() const;
+    std::vector<std::array<float,2>> getRecentPoints() const;
+    std::optional<std::array<float,2>> getCurrentPoint() const;
+    
 private:
     // ===========================================================
     // feature (centroids) vector matrix S
@@ -83,6 +87,10 @@ private:
     int findClosestCentroid(const std::array<float,2>& features, float& distanceFound) const;
     
     void reserveForMaxClusters();
+    
+    std::vector<std::array<float,2>> recentPoints;
+    std::optional<std::array<float,2>> lastProcessedFeatures;
+    static const size_t maxRecentPoints = 50;
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RTEFC_Engine)
 };

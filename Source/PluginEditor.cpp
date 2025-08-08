@@ -8,14 +8,13 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ClusterVisualizationComponent.h"
+
 
 //==============================================================================
 RTWavesetsAudioProcessorEditor::RTWavesetsAudioProcessorEditor (RTWavesetsAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    // Make sure that before the constructor has finished, you've set the
-    // editor's size to whatever you need it to be.
-    setSize (720, 460);
     
     engineModeCombo.addItem("RTEFC", 1);
     engineModeCombo.addItem("K-Means", 2);
@@ -99,10 +98,24 @@ RTWavesetsAudioProcessorEditor::RTWavesetsAudioProcessorEditor (RTWavesetsAudioP
     addAndMakeVisible(distanceLabel);
     addAndMakeVisible(windowCountLabel);
     
+    visualizationComponent = std::make_unique<ClusterVisualizationComponent>(audioProcessor);
+    addAndMakeVisible(visualizationComponent.get());
+    
+    setSize (900, 460);
+    
     startTimerHz(10);
 }
 
-RTWavesetsAudioProcessorEditor::~RTWavesetsAudioProcessorEditor() = default;
+RTWavesetsAudioProcessorEditor::~RTWavesetsAudioProcessorEditor()
+{
+    stopTimer();
+        
+    if (visualizationComponent)
+    {
+        visualizationComponent->setVisible(false);
+        visualizationComponent.reset(); // Explicit destruction
+    }
+}
 
 //==============================================================================
 void RTWavesetsAudioProcessorEditor::paint (juce::Graphics& g)
@@ -114,14 +127,18 @@ void RTWavesetsAudioProcessorEditor::paint (juce::Graphics& g)
 void RTWavesetsAudioProcessorEditor::resized()
 {
     auto r = getLocalBounds().reduced(10);
-
-    // Mode
-    auto top = r.removeFromTop(40);
+    
+    auto controlsArea = r.removeFromLeft((int)(r.getWidth() * 0.6f));
+        
+    visualizationComponent->setBounds(r.reduced(5));
+    
+    // Layout controls in the left area (existing code but using controlsArea instead of r)
+    auto top = controlsArea.removeFromTop(40);
     modeLabel.setBounds(top.removeFromLeft(120));
     engineModeCombo.setBounds(top.removeFromLeft(200));
 
     // RTEFC row
-    auto row1 = r.removeFromTop(150);
+    auto row1 = controlsArea.removeFromTop(150);
     auto colW = row1.getWidth() / 3;
 
     {
@@ -141,7 +158,7 @@ void RTWavesetsAudioProcessorEditor::resized()
     }
 
     // RTEFC second row
-    auto row2 = r.removeFromTop(150);
+    auto row2 = controlsArea.removeFromTop(150);
     colW = row2.getWidth() / 3;
     {
         auto b = row2.removeFromLeft(colW).reduced(6);
@@ -162,7 +179,7 @@ void RTWavesetsAudioProcessorEditor::resized()
     }
 
     // KMeans row
-    auto row3 = r.removeFromTop(150);
+    auto row3 = controlsArea.removeFromTop(150);
     colW = row3.getWidth() / 5;
     {
         auto b = row3.removeFromLeft(colW).reduced(6);
@@ -191,7 +208,7 @@ void RTWavesetsAudioProcessorEditor::resized()
     }
 
     // Telemetry
-    auto bottom = r.removeFromTop(40);
+    auto bottom = controlsArea.removeFromTop(40);
     clustersLabel.setBounds(bottom.removeFromLeft(200));
     distanceLabel.setBounds(bottom.removeFromLeft(220));
     windowCountLabel.setBounds(bottom.removeFromLeft(200));
